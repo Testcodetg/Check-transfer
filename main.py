@@ -44,7 +44,7 @@ def load_config() -> dict:
     default_cfg = {
         "old_db": {"server": "", "database": "", "uid": "", "pwd": ""},
         "new_db": {"server": "", "database": "", "uid": "", "pwd": ""},
-        "driver": "ODBC Driver 18 for SQL Server",
+        "driver": "ODBC Driver 17 for SQL Server",
         "encrypt": True,
         "trust_server_cert": True,
     }
@@ -61,7 +61,7 @@ def build_conn_str(cfg: dict, which: str) -> str:
     """
     which: 'old_db' | 'new_db'
     """
-    driver = cfg.get("driver") or "ODBC Driver 18 for SQL Server"
+    driver = cfg.get("driver") or "ODBC Driver 17 for SQL Server"
     encrypt = "yes" if cfg.get("encrypt", True) else "no"
     trust = "yes" if cfg.get("trust_server_cert", True) else "no"
 
@@ -242,7 +242,7 @@ def render_config_form(cfg: dict) -> dict:
         cfg_editor[db_key] = {"server": server, "database": database, "uid": uid, "pwd": pwd}
 
     st.subheader("🧩 ตัวเลือกเพิ่มเติม")
-    driver = st.text_input("ODBC Driver", value=cfg.get("driver", "ODBC Driver 18 for SQL Server"), key="cfg_driver_txt")
+    driver = st.text_input("ODBC Driver", value=cfg.get("driver", "ODBC Driver 17 for SQL Server"), key="cfg_driver_txt")
     encrypt = st.checkbox("Encrypt", value=cfg.get("encrypt", True), key="cfg_encrypt_chk")
     trust = st.checkbox("Trust Server Certificate", value=cfg.get("trust_server_cert", True), key="cfg_trust_chk")
 
