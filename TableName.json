@@ -1,0 +1,22 @@
+{
+  "master": [
+    "PNM_Zone",
+    "PNM_Province",
+    "COM_Company",
+    "DOC_DocumentName"
+  ],
+  "transaction": [
+    "DOC_Header",
+    "DOC_Detail",
+    "PNM_Position_His"
+  ],
+  "schema": {
+    "PNM_Zone": "dbo",
+    "PNM_Province": "dbo",
+    "COM_Company": "dbo",
+    "DOC_DocumentName": "dbo",
+    "DOC_Header": "hr",
+    "DOC_Detail": "hr",
+    "PNM_Position_His": "dbo"
+  }
+}

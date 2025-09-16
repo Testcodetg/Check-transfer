@@ -1,0 +1,17 @@
+{
+  "old_db": {
+    "server": "20240329-3408",
+    "database": "HROpenspaceDB_Olic",
+    "uid": "sa",
+    "pwd": "tiger"
+  },
+  "new_db": {
+    "server": "20240329-3408",
+    "database": "TigerOpenspace",
+    "uid": "sa",
+    "pwd": "tiger"
+  },
+  "driver": "ODBC Driver 18 for SQL Server",
+  "encrypt": true,
+  "trust_server_cert": true
+}
