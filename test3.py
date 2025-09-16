@@ -6,6 +6,16 @@ from typing import List, Dict, Tuple
 import pandas as pd  # NEW
 
 
+# -------------------------------
+# หากพบ ImportError เกี่ยวกับ pyodbc/unixODBC บน Mac เช่น:
+#   ImportError: ... Library not loaded: /opt/homebrew/opt/unixodbc/lib/libodbc.2.dylib
+# ให้ติดตั้ง unixODBC ด้วยคำสั่งนี้ใน Terminal:
+#   brew install unixodbc
+# แล้วจึงติดตั้ง pyodbc ใหม่ (ถ้าจำเป็น):
+#   pip install --force-reinstall pyodbc
+# -------------------------------
+
+
 #----------------------------------------------------
 
 

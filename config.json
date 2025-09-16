@@ -1,9 +1,9 @@
 {
   "old_db": {
-    "server": "20240329-3408",
-    "database": "HROpenspaceDB_Olic",
+    "server": "203.151.190.164,8088",
+    "database": "FACTINDB",
     "uid": "sa",
-    "pwd": "tiger"
+    "pwd": "Tigersoft1998"
   },
   "new_db": {
     "server": "20240329-3408",
