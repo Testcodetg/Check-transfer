@@ -1,324 +1,438 @@
 import json
-import hashlib
+from pathlib import Path
+from typing import List, Dict, Tuple, Optional
+
+import pyodbc
 import pandas as pd
-import sqlalchemy as sa
-from sqlalchemy.engine import Engine
-from typing import List, Tuple, Optional, Dict
 import streamlit as st
 
-st.set_page_config(page_title="DB Comparator", layout="wide")
+# ================================
+# Paths/Constants
+# ================================
+CONFIG_PATH = Path("config.json")     # มี old_db/new_db/driver/encrypt/trust_server_cert
+TABLES_PATH = Path("tables.json")     # {"master":[...], "transaction":[...]}
 
-# -------------------------- Utilities --------------------------
+# ================================
+# Base Utils
+# ================================
+def quote_ident(name: str) -> str:
+    """ป้องกันชื่อ object ที่มีอักขระพิเศษ"""
+    return f"[{name.replace(']', ']]')}]"
 
-@st.cache_data(show_spinner=False)
-def make_engine(db_type: str, **kwargs) -> Engine:
-    if db_type == "SQL Server":
-        driver = kwargs.get("driver") or "ODBC Driver 17 for SQL Server"
-        query = {"driver": driver}
-        url = sa.engine.URL.create(
-            "mssql+pyodbc",
-            username=kwargs.get("username"),
-            password=kwargs.get("password"),
-            host=kwargs.get("host"),
-            port=kwargs.get("port"),
-            database=kwargs.get("database"),
-            query=query,
-        )
-    else:
-        raise ValueError("Only SQL Server is supported in this demo")
-    return sa.create_engine(url, pool_pre_ping=True)
-
-@st.cache_data(show_spinner=False)
-def list_tables_from_json(json_file: str) -> Dict[str, List[str]]:
+def load_json(path: Path, default) -> dict:
+    if not path.exists():
+        path.write_text(json.dumps(default, ensure_ascii=False, indent=2), encoding="utf-8")
+        return default
     try:
-        with open(json_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
-        st.error(f"ไม่สามารถโหลด JSON ได้: {e}")
-        return {}
+        st.error(f"โหลดไฟล์ {path.name} ไม่สำเร็จ: {e}")
+        return default
 
-@st.cache_data(show_spinner=True, ttl=600)
-def read_table(engine: Engine, schema: Optional[str], table: str, limit: Optional[int]) -> pd.DataFrame:
-    full = f"{schema}.{table}" if schema else table
-    q = f"SELECT * FROM {full}"
-    df = pd.read_sql_query(sa.text(q), engine)
-    if limit:
-        return df.head(limit)
+def save_json(path: Path, data: dict) -> bool:
+    try:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    except Exception as e:
+        st.error(f"บันทึก {path.name} ไม่สำเร็จ: {e}")
+        return False
+
+# ================================
+# Config / Tables
+# ================================
+def load_config() -> dict:
+    default_cfg = {
+        "old_db": {"server": "", "database": "", "uid": "", "pwd": ""},
+        "new_db": {"server": "", "database": "", "uid": "", "pwd": ""},
+        "driver": "ODBC Driver 18 for SQL Server",
+        "encrypt": True,
+        "trust_server_cert": True,
+    }
+    return load_json(CONFIG_PATH, default_cfg)
+
+def load_tables() -> dict:
+    default_tables = {
+        "master": ["PNM_Zone", "PNM_Province", "COM_Company", "DOC_DocumentName"],
+        "transaction": ["DOC_Header", "DOC_Detail", "PNM_Position_His"],
+    }
+    return load_json(TABLES_PATH, default_tables)
+
+def build_conn_str(cfg: dict, which: str) -> str:
+    """
+    which: 'old_db' | 'new_db'
+    """
+    driver = cfg.get("driver") or "ODBC Driver 18 for SQL Server"
+    encrypt = "yes" if cfg.get("encrypt", True) else "no"
+    trust = "yes" if cfg.get("trust_server_cert", True) else "no"
+
+    part = cfg.get(which, {})
+    server = part.get("server", "")
+    database = part.get("database", "")
+    uid = part.get("uid", "")
+    pwd = part.get("pwd", "")
+
+    return (
+        f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
+        f"UID={uid};PWD={pwd};Encrypt={encrypt};TrustServerCertificate={trust}"
+    )
+
+def open_conn(conn_str: str):
+    return pyodbc.connect(conn_str, timeout=10)
+
+# ================================
+# DB Metadata / Quick Checks
+# ================================
+def q_columns(conn, table_name: str) -> List[Tuple[str, int]]:
+    """
+    คืน [(column_name, column_id)] เรียงตามลำดับคอลัมน์ในตาราง
+    """
+    sql = """
+    SELECT c.name AS col_name, c.column_id
+    FROM sys.columns c
+    INNER JOIN sys.objects o ON c.object_id = o.object_id
+    WHERE o.type IN ('U') AND o.name = ?
+    ORDER BY c.column_id
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (table_name,))
+        return [(r[0], int(r[1])) for r in cur.fetchall()]
+
+def q_rowcount(conn, table_name: str) -> int:
+    sql = f"SELECT COUNT_BIG(1) FROM {quote_ident(table_name)} WITH (NOLOCK)"
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        return int(cur.fetchone()[0])
+
+def q_checksum(conn, table_name: str) -> int:
+    """
+    SUM(BINARY_CHECKSUM(*)) — เร็วและพอจับต่างได้ (ไม่ใช่ 100% เท่าการเทียบทุกแถวทุกคอลัมน์)
+    """
+    sql = f"SELECT ISNULL(SUM(BINARY_CHECKSUM(*)), 0) FROM {quote_ident(table_name)} WITH (NOLOCK)"
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        return int(cur.fetchone()[0])
+
+def common_columns(conn_old, conn_new, table_name: str) -> List[str]:
+    cols_old = [c for c, _ in q_columns(conn_old, table_name)]
+    cols_new = [c for c, _ in q_columns(conn_new, table_name)]
+    return [c for c in cols_old if c in cols_new]  # รักษาลำดับตาม OLD
+
+# ================================
+# Compare Logic
+# ================================
+def compare_table(conn_old, conn_new, table_name: str) -> dict:
+    """
+    เปรียบเทียบ schema (แค่ชื่อคอลัมน์/ลำดับ), row count, checksum
+    ถ้าต่าง -> ดึงตัวอย่างแถวที่ต่าง (จากชุดคอลัมน์ร่วม) ด้วยการเทียบใน Python
+    """
+    res = {
+        "table": table_name,
+        "schema_equal": True,
+        "rowcount_old": None,
+        "rowcount_new": None,
+        "checksum_old": None,
+        "checksum_new": None,
+        "ok": True,                 # true = ไม่มีความต่างด้านข้อมูล (rowcount/checksum เท่ากัน)
+        "messages": [],
+        "only_in_old": [],
+        "only_in_new": [],
+        "columns_used": [],
+    }
+
+    try:
+        cols_old = [c for c, _ in q_columns(conn_old, table_name)]
+        cols_new = [c for c, _ in q_columns(conn_new, table_name)]
+        if cols_old != cols_new:
+            res["schema_equal"] = False
+            miss_new = [c for c in cols_old if c not in cols_new]
+            miss_old = [c for c in cols_new if c not in cols_old]
+            if miss_new:
+                res["messages"].append(f"คอลัมน์ใน OLD ที่ไม่มีใน NEW: {', '.join(miss_new)}")
+            if miss_old:
+                res["messages"].append(f"คอลัมน์ใน NEW ที่ไม่มีใน OLD: {', '.join(miss_old)}")
+
+        res["rowcount_old"] = q_rowcount(conn_old, table_name)
+        res["rowcount_new"] = q_rowcount(conn_new, table_name)
+        if res["rowcount_old"] != res["rowcount_new"]:
+            res["ok"] = False
+            res["messages"].append(f"Row count ต่างกัน (OLD={res['rowcount_old']}, NEW={res['rowcount_new']})")
+
+        res["checksum_old"] = q_checksum(conn_old, table_name)
+        res["checksum_new"] = q_checksum(conn_new, table_name)
+        if res["checksum_old"] != res["checksum_new"]:
+            res["ok"] = False
+            res["messages"].append("Checksum ต่างกัน")
+
+        # ถ้า checksum/rowcount ต่าง -> สุ่มตัวอย่างความต่างแบบ set-based จาก 2 ฝั่ง
+        if not res["ok"]:
+            only_old, only_new, cols_used = sample_row_diffs(conn_old, conn_new, table_name, limit=100)
+            res["only_in_old"] = only_old
+            res["only_in_new"] = only_new
+            res["columns_used"] = cols_used
+
+        return res
+    except Exception as e:
+        res["ok"] = False
+        res["messages"].append(f"เกิดข้อผิดพลาด: {e}")
+        return res
+
+def sample_row_diffs(conn_old, conn_new, table: str, limit: int = 100) -> Tuple[List[Dict], List[Dict], List[str]]:
+    """
+    ดึง sample สองชุดจาก OLD/NEW และหาค่าที่ต่างกันเชิงค่า (เฉพาะคอลัมน์ร่วม)
+    """
+    cols = common_columns(conn_old, conn_new, table)
+    if not cols:
+        return [], [], []
+
+    df_old = fetch_table_sample(conn_old, table, columns=cols, top=limit)
+    df_new = fetch_table_sample(conn_new, table, columns=cols, top=limit)
+
+    # เปลี่ยนข้อมูลเป็นชุด tuples (แปลงทุกคอลัมน์เป็น string เพื่อเทียบง่าย)
+    cols_use = [c for c in cols if c in df_old.columns and c in df_new.columns]
+    set_old = {tuple(str(x) for x in row) for row in df_old[cols_use].itertuples(index=False, name=None)}
+    set_new = {tuple(str(x) for x in row) for row in df_new[cols_use].itertuples(index=False, name=None)}
+
+    only_old = list(set_old - set_new)
+    only_new = list(set_new - set_old)
+
+    def to_dicts(tuples_list):
+        return [dict(zip(cols_use, t)) for t in tuples_list][:limit]
+
+    return to_dicts(only_old), to_dicts(only_new), cols_use
+
+# ================================
+# Data Preview
+# ================================
+def fetch_table_sample(conn, table: str,
+                       columns: Optional[List[str]] = None,
+                       where: Optional[str] = None,
+                       order_by: Optional[str] = None,
+                       top: int = 200) -> pd.DataFrame:
+    cols_meta = q_columns(conn, table)
+    all_cols = [c for c, _ in cols_meta]
+    if not all_cols:
+        return pd.DataFrame()
+
+    use_cols = [c for c in (columns or all_cols) if c in all_cols] or all_cols
+    col_sql = ", ".join(quote_ident(c) for c in use_cols)
+    where_sql = f" WHERE {where} " if where and where.strip() else ""
+    order_sql = f" ORDER BY {order_by} " if order_by and order_by.strip() else ""
+
+    sql = f"SELECT TOP ({top}) {col_sql} FROM {quote_ident(table)} WITH (NOLOCK){where_sql}{order_sql}"
+
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+        df = pd.DataFrame.from_records(rows, columns=use_cols)
     return df
 
-def compare_tables(df_a: pd.DataFrame, df_b: pd.DataFrame, key_cols: Optional[List[str]] = None) -> Dict[str, pd.DataFrame]:
-    res = {}
-    meta = {
-        "rows_A": len(df_a),
-        "rows_B": len(df_b),
-        "cols_A": len(df_a.columns),
-        "cols_B": len(df_b.columns),
-    }
-    common_cols = [c for c in df_a.columns if c in set(df_b.columns)]
-    df_a_c = df_a[common_cols].copy()
-    df_b_c = df_b[common_cols].copy()
+# ================================
+# Streamlit UI
+# ================================
+st.set_page_config(page_title="DB Compare (Old vs New)", page_icon="🧪", layout="wide")
+st.title("🧪 เปรียบเทียบข้อมูล: ฐานเก่า vs ฐานใหม่")
 
-    if not key_cols:
-        df_a_c["_rowhash"] = df_a_c.apply(lambda row: hashlib.md5("|".join(str(v) for v in row).encode()).hexdigest(), axis=1)
-        df_b_c["_rowhash"] = df_b_c.apply(lambda row: hashlib.md5("|".join(str(v) for v in row).encode()).hexdigest(), axis=1)
-        key_cols = ["_rowhash"]
+cfg = load_config()
+tables = load_tables()
 
-    A = df_a_c.set_index(key_cols, drop=False)
-    B = df_b_c.set_index(key_cols, drop=False)
+# ---- Connection Status
+conn_str_old = build_conn_str(cfg, "old_db")
+conn_str_new = build_conn_str(cfg, "new_db")
 
-    only_in_a = A.loc[~A.index.isin(B.index)]
-    only_in_b = B.loc[~B.index.isin(A.index)]
+col_status, col_edit_tables = st.columns([1, 1])
+with col_status:
+    st.subheader("สถานะการเชื่อมต่อ")
+    ok_old = ok_new = False
+    try:
+        with open_conn(conn_str_old):
+            st.success("OLD: เชื่อมต่อได้")
+            ok_old = True
+    except Exception as e:
+        st.error(f"OLD: เชื่อมต่อไม่ได้ - {e}")
 
-    shared_idx = A.index.intersection(B.index)
-    A_shared = A.loc[shared_idx]
-    B_shared = B.loc[shared_idx]
+    try:
+        with open_conn(conn_str_new):
+            st.success("NEW: เชื่อมต่อได้")
+            ok_new = True
+    except Exception as e:
+        st.error(f"NEW: เชื่อมต่อไม่ได้ - {e}")
 
-    value_cols = [c for c in common_cols if c not in key_cols]
-    diffs = []
-    for c in value_cols:
-        neq = (A_shared[c].astype(str).fillna("") != B_shared[c].astype(str).fillna(""))
-        if neq.any():
-            tmp = pd.DataFrame({
-                "__key__": list(shared_idx),
-                "column": c,
-                "A": A_shared.loc[neq, c].astype(str).fillna("").values,
-                "B": B_shared.loc[neq, c].astype(str).fillna("").values,
-            }, index=A_shared.loc[neq].index)
-            diffs.append(tmp)
-    diff_on_keys = pd.concat(diffs, axis=0) if diffs else pd.DataFrame(columns=["__key__", "column", "A", "B"])
-
-    res["meta"] = pd.DataFrame([meta])
-    res["only_in_a"] = only_in_a.reset_index(drop=True)
-    res["only_in_b"] = only_in_b.reset_index(drop=True)
-    res["diff_on_keys"] = diff_on_keys.reset_index(drop=True)
-    return res
-
-# -------------------------- UI --------------------------
-
-st.title("🔍 DB Comparator — เปรียบเทียบข้อมูลระหว่าง 2 ฐานข้อมูล")
-st.caption("ปรับ UI ให้กำหนดค่าตามภาพตัวอย่าง: กรอก connection string สำหรับ Old/New และโหลดรายชื่อ table จากไฟล์ JSON")
-
-# ---------- Helpers for connection string (SQL Server style) ----------
-from urllib.parse import quote_plus
-
-def mssql_odbc_url_from_kvp(kvp: str, driver: str = "ODBC Driver 17 for SQL Server") -> sa.engine.URL:
-    """Convert ADO-style k=v; strings (server=..;database=..;uid=..;pwd=..) to SQLAlchemy pyodbc URL."""
-    parts = {}
-    for seg in kvp.split(";"):
-        seg = seg.strip()
-        if not seg:
-            continue
-        if "=" in seg:
-            k, v = seg.split("=", 1)
-            parts[k.strip().lower()] = v.strip()
-    server = parts.get("server") or parts.get("data source") or "localhost"
-    database = parts.get("database") or parts.get("initial catalog") or "master"
-    uid = parts.get("uid") or parts.get("user id")
-    pwd = parts.get("pwd") or parts.get("password")
-    # Build a pyodbc connection string
-    odbc_cs = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};TrustServerCertificate=yes;"
-    if uid:
-        odbc_cs += f"UID={uid};"
-    if pwd:
-        odbc_cs += f"PWD={pwd};"
-    return sa.engine.URL.create("mssql+pyodbc", query={"odbc_connect": quote_plus(odbc_cs)})
-
-@st.cache_data(show_spinner=False)
-def make_engine_from_connstr(conn_str: str, db_type: str = "SQL Server") -> Engine:
-    if db_type == "SQL Server":
-        url = mssql_odbc_url_from_kvp(conn_str)
-        return sa.create_engine(url, pool_pre_ping=True)
-    elif db_type == "SQLite":
-        # allow passing path via database=...; in conn_str
-        parts = dict(seg.split("=",1) for seg in conn_str.split(";") if "=" in seg)
-        return sa.create_engine(sa.engine.URL.create("sqlite", database=parts.get("database","")))
-    else:
-        raise ValueError("Currently UI แบบนี้รองรับ SQL Server/SQLite; ต้องการ MySQL/Postgres แจ้งได้ครับ")
-
-# ---------- JSON schema for table list ----------
-# {
-#   "master": ["PNM_Zone", "PNM_Province"],
-#   "transaction": ["DocHeader", "DocDetail"],
-#   "schema": {"PNM_Zone": "dbo", "DocHeader": "hr"}  # (ถ้ามี) ระบุสคีมาเฉพาะตาราง
-# }
-
-# ---------- Settings Dialog (Popup) ----------
-try:
-    dialog_api = st.dialog  # Streamlit >= 1.32
-except Exception:
-    dialog_api = st.experimental_dialog  # Fallback for older versions
-
-@dialog_api("ตั้งค่า Database & รายการ Table (JSON)")
-def settings_dialog():
-    st.write("กรอก **Connection String** สำหรับ Old/New และอัปโหลดไฟล์ JSON รายชื่อ Table")
-st.session_state["old_server"] = st.text_input("Old server", value=st.session_state["old_server"], key="dlg_old_server")
-st.session_state["old_db"] = st.text_input("Old database", value=st.session_state["old_db"], key="dlg_old_db")
-st.session_state["old_uid"] = st.text_input("Old uid", value=st.session_state["old_uid"], key="dlg_old_uid")
-st.session_state["old_pwd"] = st.text_input("Old pwd", value=st.session_state["old_pwd"], type="password", key="dlg_old_pwd")
-    col = st.columns(2)
-    with col[0]:
-        st.markdown("**Old Database**")
-        st.session_state.setdefault("conn_old", "")
-        st.session_state.setdefault("old_server", "")
-        st.session_state.setdefault("old_db", "")
-        st.session_state.setdefault("old_uid", "")
-        st.session_state.setdefault("old_pwd", "")
-        st.session_state["old_server"] = st.text_input("Old server", value=st.session_state["old_server"], key="dlg_old_server")
-        st.session_state["old_db"] = st.text_input("Old database", value=st.session_state["old_db"], key="dlg_old_db")
-        st.session_state["old_uid"] = st.text_input("Old uid", value=st.session_state["old_uid"], key="dlg_old_uid")
-        st.session_state["old_pwd"] = st.text_input("Old pwd", value=st.session_state["old_pwd"], type="password", key="dlg_old_pwd")
-        st.caption("ตัวอย่าง: server=TG\\MSSQL2017;database=Cyberhm;uid=sa;pwd=xxxx")
-    with col[1]:
-        st.markdown("**New Database**")
-        st.session_state.setdefault("conn_new", "")
-        st.session_state["conn_new"] = st.text_input("server=...;database=...;uid=...;pwd=...", value=st.session_state["conn_new"], key="dlg_conn_new")
-        st.caption("ตัวอย่าง: server=TG\\MSSQL2017;database=HROpenspaceDB;uid=sa;pwd=xxxx")
-
-    st.markdown("---")
-    st.subheader("ไฟล์ JSON รายชื่อ Table")
-    up = st.file_uploader("เลือกไฟล์ JSON", type=["json"], key="dlg_json")
-    if up is not None:
-        import json
+with col_edit_tables:
+    st.subheader("จัดการ tables.json")
+    tables_editor = st.text_area("แก้ไขรายการตาราง", value=json.dumps(tables, ensure_ascii=False, indent=2), height=200)
+    if st.button("💾 บันทึก tables.json"):
         try:
-            st.session_state["tables_cfg"] = json.load(up)
-            st.success("อ่านไฟล์ JSON สำเร็จ")
+            new_tbls = json.loads(tables_editor)
+            if save_json(TABLES_PATH, new_tbls):
+                st.success("บันทึกสำเร็จ")
+                st.experimental_rerun()
         except Exception as e:
-            st.error(f"อ่านไฟล์ JSON ไม่ได้: {e}")
+            st.error(f"รูปแบบ JSON ไม่ถูกต้อง: {e}")
 
-    st.markdown("---")
-    default_limit = st.number_input("จำกัดจำนวนแถวสูงสุดที่ดึงต่อครั้ง", min_value=100, max_value=500000, value=st.session_state.get("default_limit",50000), step=1000, key="dlg_limit")
+st.divider()
 
-    save, cancel = st.columns([1,1])
-    with save:
-        if st.button("💾 บันทึก & เชื่อมต่อ", use_container_width=True):
-            try:
-                st.session_state["engA"] = make_engine_from_connstr(st.session_state["conn_old"] or "")
-                st.session_state["engB"] = make_engine_from_connstr(st.session_state["conn_new"] or "")
-                st.session_state["default_limit"] = st.session_state["dlg_limit"]
-                st.session_state["_settings_ok"] = True
-                st.success("ตั้งค่า Database สำเร็จ")
-                st.rerun()
-            except Exception as e:
-                st.error(f"เชื่อมต่อไม่สำเร็จ: {e}")
-    with cancel:
-        if st.button("ยกเลิก", use_container_width=True):
-            st.session_state["_settings_open"] = False
-            st.rerun()
+# ---- Compare Section
+st.header("🔍 Compare (Schema/Rows/Checksum)")
 
-# Top bar with gear button
-bar_l, bar_r = st.columns([6,1])
-with bar_l:
-    st.caption("ใช้ปุ่ม ⚙️ เพื่อเปิดหน้าตั้งค่า (ไม่ต้องตั้งค่าบ่อย)")
-with bar_r:
-    if st.button("⚙️ ตั้งค่า", use_container_width=True):
-        st.session_state["_settings_open"] = True
+tab_choice = st.radio("เลือกหมวด", options=["master", "transaction"], horizontal=True, key="cmp_cat")
+options = tables.get(tab_choice, [])
+selected = st.multiselect("เลือกตารางที่ต้องการเปรียบเทียบ", options=options, default=options)
 
-if st.session_state.get("_settings_open"):
-    settings_dialog()
-
-# เตรียม state
-if btn_connect:
-    try:
-        st.session_state["engA"] = make_engine_from_connstr(conn_old or "")
-        st.session_state["engB"] = make_engine_from_connstr(conn_new or "")
-        st.success("ตั้งค่า Database สำเร็จ")
-    except Exception as e:
-        st.error(f"เชื่อมต่อไม่สำเร็จ: {e}")
-
-if json_file is not None:
-    try:
-        import json
-        tables_cfg = json.load(json_file)
-        st.session_state["tables_cfg"] = tables_cfg
-    except Exception as e:
-        st.error(f"อ่านไฟล์ JSON ไม่ได้: {e}")
-
-# Main body (อิงตาม JSON)
-engA = st.session_state.get("engA")
-engB = st.session_state.get("engB")
-tables_cfg = st.session_state.get("tables_cfg") or {}
-
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("1. โอนข้อมูล Master / ตรวจสอบ Master")
-with col2:
-    st.subheader("2. โอนข้อมูล Transaction / ตรวจสอบ Transaction")
-
-master_list = tables_cfg.get("master", [])
-tran_list = tables_cfg.get("transaction", [])
-schema_map = tables_cfg.get("schema", {})
-
-left, right = st.columns(2)
-with left:
-    with st.expander("Master (จาก JSON)", expanded=True):
-        if not master_list:
-            st.info("ยังไม่มีรายชื่อ master ใน JSON")
-        for i, tname in enumerate(master_list):
-            label = f"• {schema_map.get(tname,'')+'.' if schema_map.get(tname) else ''}{tname}"
-            if st.button(label, key=f"json_master_{i}"):
-                st.session_state["selected"] = (schema_map.get(tname), tname)
-
-with right:
-    with st.expander("Transaction (จาก JSON)", expanded=True):
-        if not tran_list:
-            st.info("ยังไม่มีรายชื่อ transaction ใน JSON")
-        for i, tname in enumerate(tran_list):
-            label = f"• {schema_map.get(tname,'')+'.' if schema_map.get(tname) else ''}{tname}"
-            if st.button(label, key=f"json_tran_{i}"):
-                st.session_state["selected"] = (schema_map.get(tname), tname)
-
-st.markdown("---")
-st.subheader("🧰 ตัวเลือกการตรวจสอบ")
-st.caption("คลิกชื่อ Table เพื่อดึงจาก Old/New (A/B) โดยใช้ชื่อเดียวกัน")
-compare_mode = st.radio("โหมดเปรียบเทียบ", ["Row count only", "Primary key & values", "No key (row hash)"], index=1, horizontal=True)
-custom_keys = st.text_input("กำหนดคีย์คอลัมน์ (ถ้ามีหลายคอลัมน์ให้คั่นด้วย ,)", value="")
-preview_limit = st.number_input("แสดงผลต่างตัวอย่างสูงสุด (rows)", min_value=10, max_value=5000, value=200, step=10)
-
-selected = st.session_state.get("selected")
-
-if engA and engB and selected:
-    sch, tbl = selected
-    st.info(f"ตารางที่เลือก: {sch+'.' if sch else ''}{tbl} — ระบบจะดึงจากทั้ง Old(A) และ New(B)")
-
-    pkA = get_primary_key(engA, sch or None, tbl)
-    pkB = get_primary_key(engB, sch or None, tbl)
-
-    if custom_keys.strip():
-        key_cols = [k.strip() for k in custom_keys.split(",") if k.strip()]
+if st.button("เริ่มเปรียบเทียบ", disabled=not (ok_old and ok_new)):
+    if not selected:
+        st.info("กรุณาเลือกอย่างน้อย 1 ตาราง")
     else:
-        key_cols = pkA if pkA else (pkB if pkB else None)
-        if compare_mode == "Row count only":
-            key_cols = []
-        elif compare_mode == "No key (row hash)":
-            key_cols = None
+        with open_conn(conn_str_old) as conn_old, open_conn(conn_str_new) as conn_new:
+            for tname in selected:
+                st.markdown(f"### 📄 ตาราง: `{tname}`")
+                res = compare_table(conn_old, conn_new, tname)
 
-    with st.spinner("กำลังดึงข้อมูลจาก Old/New และเปรียบเทียบ..."):
-        dfA = read_table(engA, sch or None, tbl, limit=default_limit)
-        dfB = read_table(engB, sch or None, tbl, limit=default_limit)
+                if res["ok"] and res["schema_equal"]:
+                    status = "✅ เหมือนกันทั้งหมด"
+                elif res["ok"] and not res["schema_equal"]:
+                    status = "🟡 โครงสร้างต่างกันเล็กน้อย แต่ข้อมูลอาจเหมือน"
+                else:
+                    status = "❌ พบความแตกต่าง"
 
-        if compare_mode == "Row count only":
-            meta = pd.DataFrame([{ "table": tbl, "rows_A": len(dfA), "rows_B": len(dfB), "equal?": len(dfA)==len(dfB)}])
-            st.dataframe(meta, use_container_width=True)
-        else:
-            res = compare_tables(dfA, dfB, key_cols=key_cols)
-            st.markdown("**สรุปผล (Meta)**")
-            st.dataframe(res["meta"], use_container_width=True)
+                st.write(f"ผลการเปรียบเทียบ: **{status}**")
+                st.write(
+                    f"- Schema equal: **{res['schema_equal']}**  \n"
+                    f"- RowCount: OLD = **{res['rowcount_old']}**, NEW = **{res['rowcount_new']}**  \n"
+                    f"- Checksum: OLD = **{res['checksum_old']}**, NEW = **{res['checksum_new']}**"
+                )
+                if res["messages"]:
+                    with st.expander("รายละเอียด / คำเตือน"):
+                        for m in res["messages"]:
+                            st.write(f"- {m}")
 
-            st.markdown("**เฉพาะที่มีใน Old(A) (ตัวอย่าง)**")
-            st.dataframe(res["only_in_a"].head(preview_limit), use_container_width=True)
+                if not res["ok"]:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.subheader("🔻 อยู่ใน OLD แต่ไม่อยู่ใน NEW (sample)")
+                        if res["only_in_old"]:
+                            st.dataframe(pd.DataFrame(res["only_in_old"]), use_container_width=True)
+                            csv1 = pd.DataFrame(res["only_in_old"]).to_csv(index=False).encode("utf-8-sig")
+                            st.download_button("⬇️ CSV (Only in OLD - sample)", data=csv1,
+                                               file_name=f"{tname}_only_in_OLD_sample.csv", mime="text/csv")
+                        else:
+                            st.caption("— ไม่มีตัวอย่าง —")
+                    with c2:
+                        st.subheader("🔺 อยู่ใน NEW แต่ไม่อยู่ใน OLD (sample)")
+                        if res["only_in_new"]:
+                            st.dataframe(pd.DataFrame(res["only_in_new"]), use_container_width=True)
+                            csv2 = pd.DataFrame(res["only_in_new"]).to_csv(index=False).encode("utf-8-sig")
+                            st.download_button("⬇️ CSV (Only in NEW - sample)", data=csv2,
+                                               file_name=f"{tname}_only_in_NEW_sample.csv", mime="text/csv")
+                        else:
+                            st.caption("— ไม่มีตัวอย่าง —")
+                st.divider()
 
-            st.markdown("**เฉพาะที่มีใน New(B) (ตัวอย่าง)**")
-            st.dataframe(res["only_in_b"].head(preview_limit), use_container_width=True)
+st.divider()
 
-            st.markdown("**คอลัมน์ที่ค่าต่างกันเมื่อ Key ตรงกัน (ตัวอย่าง)**")
-            st.dataframe(res["diff_on_keys"].head(preview_limit), use_container_width=True)
+# ---- Data Preview Section
+st.header("👀 ดูข้อมูลตาราง (Data Preview)")
+prev_cat = st.radio("เลือกหมวด", options=["master", "transaction"], horizontal=True, key="preview_cat")
+prev_options = tables.get(prev_cat, [])
+tbl_preview = st.selectbox("เลือกตาราง", options=prev_options, index=0 if prev_options else None)
 
-elif not (engA and engB):
-    st.warning("โปรดกด \"ตั้งค่า Database\" ให้สำเร็จก่อน")
+if tbl_preview and ok_old and ok_new:
+    with open_conn(conn_str_old) as conn_old, open_conn(conn_str_new) as conn_new:
+        cols_old = [c for c, _ in q_columns(conn_old, tbl_preview)]
+        cols_new = [c for c, _ in q_columns(conn_new, tbl_preview)]
+        common_cols = [c for c in cols_old if c in cols_new] or (cols_old or cols_new)
+
+        st.subheader(f"ตาราง: `{tbl_preview}`")
+        with st.expander("🧩 ตั้งค่าการดึงข้อมูล", expanded=True):
+            c_l, c_r = st.columns([2, 1])
+            with c_l:
+                picked_cols = st.multiselect("เลือกคอลัมน์ (เว้นว่าง = คอลัมน์ร่วมทั้งหมด)",
+                                             options=common_cols,
+                                             default=common_cols[:min(10, len(common_cols))])
+                where_clause = st.text_input("WHERE (ไม่ต้องพิมพ์คำว่า WHERE)", placeholder="เช่น Code='TH' AND IsActive=1")
+                order_by = st.text_input("ORDER BY", placeholder="เช่น Code, Name")
+            with c_r:
+                top_n = st.number_input("TOP (จำนวนแถว)", min_value=1, max_value=100000, value=200, step=50)
+                st.caption("แนะนำ 50–1000 เพื่อแสดงผลเร็ว")
+
+            run_preview = st.button("📄 แสดงข้อมูล (OLD/NEW)")
+
+        if run_preview:
+            col_old, col_new = st.columns(2)
+            use_cols = picked_cols or common_cols
+
+            with col_old:
+                st.write("**OLD**")
+                try:
+                    df_old = fetch_table_sample(conn_old, tbl_preview, use_cols, where_clause, order_by, top_n)
+                    st.dataframe(df_old, use_container_width=True)
+                    st.download_button("⬇️ ดาวน์โหลด CSV (OLD)",
+                                       data=df_old.to_csv(index=False).encode("utf-8-sig"),
+                                       file_name=f"{tbl_preview}_OLD.csv",
+                                       mime="text/csv")
+                except Exception as e:
+                    st.error(f"ดึงข้อมูล OLD ไม่สำเร็จ: {e}")
+
+            with col_new:
+                st.write("**NEW**")
+                try:
+                    df_new = fetch_table_sample(conn_new, tbl_preview, use_cols, where_clause, order_by, top_n)
+                    st.dataframe(df_new, use_container_width=True)
+                    st.download_button("⬇️ ดาวน์โหลด CSV (NEW)",
+                                       data=df_new.to_csv(index=False).encode("utf-8-sig"),
+                                       file_name=f"{tbl_preview}_NEW.csv",
+                                       mime="text/csv")
+                except Exception as e:
+                    st.error(f"ดึงข้อมูล NEW ไม่สำเร็จ: {e}")
+
+        with st.expander("🧪 ตัวช่วยเทียบอย่างไว (diff จาก sample ที่ดึงมา)"):
+            st.caption("ใช้การตั้งค่าด้านบน (คอลัมน์/WHERE/ORDER/TOP) เพื่อดึง sample และหาแถวที่ต่างกัน")
+            if st.button("🔍 หาแถวที่ไม่ตรงกัน (from sample)"):
+                try:
+                    use_cols = picked_cols or common_cols
+                    df_old = fetch_table_sample(conn_old, tbl_preview, use_cols, where_clause, order_by, top_n)
+                    df_new = fetch_table_sample(conn_new, tbl_preview, use_cols, where_clause, order_by, top_n)
+
+                    cols_use = [c for c in use_cols if c in df_old.columns and c in df_new.columns]
+                    if not cols_use:
+                        st.warning("ไม่มีคอลัมน์ร่วมสำหรับเทียบ")
+                    else:
+                        set_old = {tuple(str(x) for x in row) for row in df_old[cols_use].itertuples(index=False, name=None)}
+                        set_new = {tuple(str(x) for x in row) for row in df_new[cols_use].itertuples(index=False, name=None)}
+                        only_old = set_old - set_new
+                        only_new = set_new - set_old
+
+                        def tuples_to_df(tset):
+                            return pd.DataFrame([dict(zip(cols_use, t)) for t in list(tset)])
+
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.write("🔻 อยู่ใน OLD แต่ไม่อยู่ใน NEW (จาก sample)")
+                            df1 = tuples_to_df(only_old)
+                            st.dataframe(df1, use_container_width=True)
+                            if not df1.empty:
+                                st.download_button("⬇️ CSV (Only in OLD - sample)",
+                                                   data=df1.to_csv(index=False).encode("utf-8-sig"),
+                                                   file_name=f"{tbl_preview}_only_in_OLD_sample.csv",
+                                                   mime="text/csv")
+                        with c2:
+                            st.write("🔺 อยู่ใน NEW แต่ไม่อยู่ใน OLD (จาก sample)")
+                            df2 = tuples_to_df(only_new)
+                            st.dataframe(df2, use_container_width=True)
+                            if not df2.empty:
+                                st.download_button("⬇️ CSV (Only in NEW - sample)",
+                                                   data=df2.to_csv(index=False).encode("utf-8-sig"),
+                                                   file_name=f"{tbl_preview}_only_in_NEW_sample.csv",
+                                                   mime="text/csv")
+                except Exception as e:
+                    st.error(f"เปรียบเทียบไม่สำเร็จ: {e}")
 else:
-    st.info("อัปโหลด JSON และคลิกชื่อ Table เพื่อเริ่มการตรวจสอบ")
+    if not ok_old or not ok_new:
+        st.info("ยังเชื่อมต่อฐานข้อมูลไม่ได้ กรุณาตรวจสอบ config.json จากหน้า 'ตั้งค่าเชื่อมต่อ' ที่คุณทำไว้ก่อนหน้า")
 
-st.markdown("---")
-st.caption("รูปแบบ JSON: { 'master': ['PNM_Zone', ...], 'transaction': ['DocHeader', ...], 'schema': {'PNM_Zone': 'dbo'} }
-หมายเหตุ: ระบบดึงข้อมูลตาม Limit เพื่อความเร็ว แนะนำระบุคีย์คอลัมน์เพื่อความแม่นยำ")
+# ================================
+# Notes
+# ================================
+st.caption(
+    "หมายเหตุ: โค้ดนี้ใช้ WITH (NOLOCK) เพื่ออ่านเร็วและลดการล็อก เหมาะกับการตรวจสอบ/อ่านอย่างเดียว "
+    "หากต้องการความถูกต้องระดับธุรกรรม 100% ให้พิจารณาเอา NOLOCK ออกตามเหมาะสม."
+)
