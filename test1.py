@@ -71,7 +71,7 @@ def build_conn_str(cfg: dict, which: str) -> str:
     uid = part.get("uid", "")
     pwd = part.get("pwd", "")
 
-    # หมายเหตุ: ต้องใช้ {{ }} คร่อมตัวแปร driver เพื่อให้ได้ DRIVER={ODBC Driver ...}
+    # วงเล็บ { } รอบชื่อไดรเวอร์ต้องเป็น {{ }} ใน f-string
     return (
         f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
         f"UID={uid};PWD={pwd};Encrypt={encrypt};TrustServerCertificate={trust}"
@@ -409,223 +409,16 @@ if st.button("เริ่มเปรียบเทียบ", disabled=not (o
                     f"- RowCount: OLD = **{res['rowcount_old']}**, NEW = **{res['rowcount_new']}**  \n"
                     f"- Checksum: OLD = **{res['checksum_old']}**, NEW = **{res['checksum_new']}**"
                 )
-                if res["messages"]:
-                    with st.expander("รายละเอียด / คำเตือน"):
-                        for m in res["messages"]:
-                            st.write(f"- {m}")
+                # if res["messages"]:\n                    with st.expander(\"รายละเอียด / คำเตือน\"):\n                        for m in res[\"messages\"]:\n                            st.write(f\"- {m}\")\n\n                if not res[\"ok\"]:\n                    c1, c2 = st.columns(2)\n                    with c1:\n                        st.subheader(\"🔻 อยู่ใน OLD แต่ไม่อยู่ใน NEW (sample)\")\n                        if res[\"only_in_old\"]:\n                            st.dataframe(pd.DataFrame(res[\"only_in_old\"]), use_container_width=True)\n                            csv1 = pd.DataFrame(res[\"only_in_old\"]).to_csv(index=False).encode(\"utf-8-sig\")\n                            st.download_button(\"⬇️ CSV (Only in OLD - sample)\", data=csv1,\n                                               file_name=f\"{tname}_only_in_OLD_sample.csv\", mime=\"text/csv\")\n                        else:\n                            st.caption(\"— ไม่มีตัวอย่าง —\")\n                    with c2:\n                        st.subheader(\"🔺 อยู่ใน NEW แต่ไม่อยู่ใน OLD (sample)\")\n                        if res[\"only_in_new\"]:\n                            st.dataframe(pd.DataFrame(res[\"only_in_new\"]), use_container_width=True)\n                            csv2 = pd.DataFrame(res[\"only_in_new\"]).to_csv(index=False).encode(\"utf-8-sig\")\n                            st.download_button(\"⬇️ CSV (Only in NEW - sample)\", data=csv2,\n                                               file_name=f\"{tname}_only_in_NEW_sample.csv\", mime=\"text/csv\")\n                        else:\n                            st.caption(\"— ไม่มีตัวอย่าง —\")\n                st.divider()\n\nst.divider()\n\n# ---- Data Preview Section\nst.header(\"👀 ดูข้อมูลตาราง (Data Preview)\")\nprev_cat = st.radio(\"เลือกหมวด\", options=[\"master\", \"transaction\"], horizontal=True, key=\"preview_cat\")\nprev_options = tables.get(prev_cat, [])\ntbl_preview = st.selectbox(\"เลือกตาราง\", options=prev_options, index=0 if prev_options else None)\n\nif tbl_preview and ok_old and ok_new:\n    with open_conn(conn_str_old) as conn_old, open_conn(conn_str_new) as conn_new:\n        cols_old = [c for c, _ in q_columns(conn_old, tbl_preview)]\n        cols_new = [c for c, _ in q_columns(conn_new, tbl_preview)]\n        common_cols = [c for c in cols_old if c in cols_new] or (cols_old or cols_new)\n\n        st.subheader(f\"ตาราง: `{tbl_preview}`\")\n        with st.expander(\"🧩 ตั้งค่าการดึงข้อมูล\", expanded=True):\n            c_l, c_r = st.columns([2, 1])\n            with c_l:\n                picked_cols = st.multiselect(\"เลือกคอลัมน์ (เว้นว่าง = คอลัมน์ร่วมทั้งหมด)\",\n                                             options=common_cols,\n                                             default=common_cols[:min(10, len(common_cols))])\n                where_clause = st.text_input(\"WHERE (ไม่ต้องพิมพ์คำว่า WHERE)\", placeholder=\"เช่น Code='TH' AND IsActive=1\")\n                order_by = st.text_input(\"ORDER BY\", placeholder=\"เช่น Code, Name\")\n            with c_r:\n                top_n = st.number_input(\"TOP (จำนวนแถว)\", min_value=1, max_value=100000, value=200, step=50)\n                st.caption(\"แนะนำ 50–1000 เพื่อแสดงผลเร็ว\")\n\n            run_preview = st.button(\"📄 แสดงข้อมูล (OLD/NEW)\")\n\n        if run_preview:\n            col_old, col_new = st.columns(2)\n            use_cols = picked_cols or common_cols\n\n            with col_old:\n                st.write(\"**OLD**\")\n                try:\n                    df_old = fetch_table_sample(conn_old, tbl_preview, use_cols, where_clause, order_by, top_n)\n                    st.dataframe(df_old, use_container_width=True)\n                    st.download_button(\"⬇️ ดาวน์โหลด CSV (OLD)\",\n                                       data=df_old.to_csv(index=False).encode(\"utf-8-sig\"),\n                                       file_name=f\"{tbl_preview}_OLD.csv\",\n                                       mime=\"text/csv\")\n                except Exception as e:\n                    st.error(f\"ดึงข้อมูล OLD ไม่สำเร็จ: {e}\")\n\n            with col_new:\n                st.write(\"**NEW**\")\n                try:\n                    df_new = fetch_table_sample(conn_new, tbl_preview, use_cols, where_clause, order_by, top_n)\n                    st.dataframe(df_new, use_container_width=True)\n                    st.download_button(\"⬇️ ดาวน์โหลด CSV (NEW)\",\n                                       data=df_new.to_csv(index=False).encode(\"utf-8-sig\"),\n                                       file_name=f\"{tbl_preview}_NEW.csv\",\n                                       mime=\"text/csv\")\n                except Exception as e:\n                    st.error(f\"ดึงข้อมูล NEW ไม่สำเร็จ: {e}\")\n\n        with st.expander(\"🧪 ตัวช่วยเทียบอย่างไว (diff จาก sample ที่ดึงมา)\"):\n            st.caption(\"ใช้การตั้งค่าด้านบน (คอลัมน์/WHERE/ORDER/TOP) เพื่อดึง sample และหาแถวที่ต่างกัน\")\n            if st.button(\"🔍 หาแถวที่ไม่ตรงกัน (from sample)\"):\n                try:\n                    use_cols = picked_cols or common_cols\n                    df_old = fetch_table_sample(conn_old, tbl_preview, use_cols, where_clause, order_by, top_n)\n                    df_new = fetch_table_sample(conn_new, tbl_preview, use_cols, where_clause, order_by, top_n)\n\n                    cols_use = [c for c in use_cols if c in df_old.columns and c in df_new.columns]\n                    if not cols_use:\n                        st.warning(\"ไม่มีคอลัมน์ร่วมสำหรับเทียบ\")\n                    else:\n                        set_old = {tuple(str(x) for x in row) for row in df_old[cols_use].itertuples(index=False, name=None)}\n                        set_new = {tuple(str(x) for x in row) for row in df_new[cols_use].itertuples(index=False, name=None)}\n                        only_old = set_old - set_new\n                        only_new = set_new - set_old\n\n                        def tuples_to_df(tset):\n                            return pd.DataFrame([dict(zip(cols_use, t)) for t in list(tset)])\n\n                        c1, c2 = st.columns(2)\n                        with c1:\n                            st.write(\"🔻 อยู่ใน OLD แต่ไม่อยู่ใน NEW (จาก sample)\")\n                            df1 = tuples_to_df(only_old)\n                            st.dataframe(df1, use_container_width=True)\n                            if not df1.empty:\n                                st.download_button(\"⬇️ CSV (Only in OLD - sample)\",\n                                                   data=df1.to_csv(index=False).encode(\"utf-8-sig\"),\n                                                   file_name=f\"{tbl_preview}_only_in_OLD_sample.csv\",\n                                                   mime=\"text/csv\")\n                        with c2:\n                            st.write(\"🔺 อยู่ใน NEW แต่ไม่อยู่ใน OLD (จาก sample)\")\n                            df2 = tuples_to_df(only_new)\n                            st.dataframe(df2, use_container_width=True)\n                            if not df2.empty:\n                                st.download_button(\"⬇️ CSV (Only in NEW - sample)\",\n                                                   data=df2.to_csv(index=False).encode(\"utf-8-sig\"),\n                                                   file_name=f\"{tbl_preview}_only_in_NEW_sample.csv\",\n                                                   mime=\"text/csv\")\n                except Exception as e:\n                    st.error(f\"เปรียบเทียบไม่สำเร็จ: {e}\")\nelse:\n    st.info(\"ยังเชื่อมต่อฐานข้อมูลไม่ได้ กรุณาตั้งค่าจากปุ่ม ‘ตั้งค่าเชื่อมต่อฐานข้อมูล’ ด้านบนก่อน\")\n\n# ================================\n# Notes\n# ================================\nst.caption(\n    \"หมายเหตุ: โค้ดนี้ใช้ WITH (NOLOCK) เพื่ออ่านเร็วและลดการล็อก เหมาะกับการตรวจสอบ/อ่านอย่างเดียว \"\n    \"หากต้องการความถูกต้องระดับธุรกรรม 100% ให้พิจารณาเอา NOLOCK ออกตามเหมาะสม.\"\n)\n```
 
-                if not res["ok"]:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.subheader("🔻 อยู่ใน OLD แต่ไม่อยู่ใน NEW (sample)")
-                        if res["only_in_old"]:
-                            st.dataframe(pd.DataFrame(res["only_in_old"]), use_container_width=True)
-                            csv1 = pd.DataFrame(res["only_in_old"]).to_csv(index=False).encode("utf-8-sig")
-                            st.download_button("⬇️ CSV (Only in OLD - sample)", data=csv1,
-                                               file_name=f"{tname}_only_in_OLD_sample.csv", mime="text/csv")
-                        else:
-                            st.caption("— ไม่มีตัวอย่าง —")
-                    with c2:
-                        st.subheader("🔺 อยู่ใน NEW แต่ไม่อยู่ใน OLD (sample)")
-                        if res["only_in_new"]:
-                            st.dataframe(pd.DataFrame(res["only_in_new"]), use_container_width=True)
-                            csv2 = pd.DataFrame(res["only_in_new"]).to_csv(index=False).encode("utf-8-sig")
-                            st.download_button("⬇️ CSV (Only in NEW - sample)", data=csv2,
-                                               file_name=f"{tname}_only_in_NEW_sample.csv", mime="text/csv")
-                        else:
-                            st.caption("— ไม่มีตัวอย่าง —")
+# ### ใช้งานยังไง
+# 1. รันแอป (`streamlit run your_app.py`)  
+# 2. กดปุ่ม **⚙️ ตั้งค่าเชื่อมต่อฐานข้อมูล** ด้านบน  
+#    - ถ้า Streamlit ใหม่พอ จะขึ้น **Popup (Modal)**  
+#    - ถ้าเวอร์ชันเก่า จะมี **Expander** ให้ตั้งค่า  
+# 3. กด **ทดสอบเชื่อมต่อ** (OLD/NEW) ได้จาก popup/expander  
+# 4. กด **บันทึก** แล้วแอปรันต่อได้ทันที (มี `st.experimental_rerun()`)
 
-                # ===== ตัวอย่างข้อมูลแบบเคียงข้าง (OLD / NEW) =====
-                with st.expander("👀 ตัวอย่างข้อมูล (OLD / NEW)"):
-                    # จำนวนแถวตัวอย่างต่อฝั่ง
-                    top_sample = st.number_input(
-                        f"จำนวนแถวตัวอย่างสำหรับ {tname}",
-                        min_value=1, max_value=10000, value=50, step=50,
-                        key=f"top_sample_{tname}"
-                    )
-                    # คอลัมน์ร่วม
-                    try:
-                        cols_old = [c for c, _ in q_columns(conn_old, tname)]
-                        cols_new = [c for c, _ in q_columns(conn_new, tname)]
-                        cols_common = [c for c in cols_old if c in cols_new]
-                    except Exception as e:
-                        cols_common = []
-                        st.error(f"ดึงคอลัมน์ไม่สำเร็จ: {e}")
+# > หมายเหตุ: ผมแก้ `build_conn_str` ให้ใช้รูปแบบ f-string ที่ถูกต้องสำหรับ `{driver}` แล้ว (ใช้ `{{ }}` ครอบค่าใน f-string)
 
-                    if not cols_common:
-                        st.warning("ไม่พบคอลัมน์ร่วมระหว่าง OLD/NEW — ไม่สามารถแสดงตัวอย่างข้อมูลได้")
-                    else:
-                        cfl, cfr = st.columns([2, 1])
-                        with cfl:
-                            where_quick = st.text_input(
-                                "WHERE (ไม่ต้องพิมพ์คำว่า WHERE)",
-                                placeholder="เช่น IsActive = 1 AND Code LIKE 'TH%'",
-                                key=f"where_sample_{tname}"
-                            )
-                            order_quick = st.text_input(
-                                "ORDER BY",
-                                placeholder="เช่น Code, Name",
-                                key=f"order_sample_{tname}"
-                            )
-                        with cfr:
-                            st.caption("TIP: ปล่อยว่างได้เพื่อความเร็ว")
-
-                        col_old_prev, col_new_prev = st.columns(2)
-                        with col_old_prev:
-                            st.write("**OLD**")
-                            try:
-                                df_old_prev = fetch_table_sample(
-                                    conn_old, tname, columns=cols_common,
-                                    where=where_quick, order_by=order_quick, top=top_sample
-                                )
-                                st.dataframe(df_old_prev, use_container_width=True)
-                                st.download_button(
-                                    "⬇️ ดาวน์โหลด CSV (OLD - sample)",
-                                    data=df_old_prev.to_csv(index=False).encode("utf-8-sig"),
-                                    file_name=f"{tname}_OLD_sample.csv",
-                                    mime="text/csv",
-                                    key=f"dl_old_{tname}"
-                                )
-                            except Exception as e:
-                                st.error(f"ดึงข้อมูล OLD ไม่สำเร็จ: {e}")
-
-                        with col_new_prev:
-                            st.write("**NEW**")
-                            try:
-                                df_new_prev = fetch_table_sample(
-                                    conn_new, tname, columns=cols_common,
-                                    where=where_quick, order_by=order_quick, top=top_sample
-                                )
-                                st.dataframe(df_new_prev, use_container_width=True)
-                                st.download_button(
-                                    "⬇️ ดาวน์โหลด CSV (NEW - sample)",
-                                    data=df_new_prev.to_csv(index=False).encode("utf-8-sig"),
-                                    file_name=f"{tname}_NEW_sample.csv",
-                                    mime="text/csv",
-                                    key=f"dl_new_{tname}"
-                                )
-                            except Exception as e:
-                                st.error(f"ดึงข้อมูล NEW ไม่สำเร็จ: {e}")
-                # ===== END ตัวอย่างข้อมูล =====
-
-                st.divider()
-
-st.divider()
-
-# ---- Data Preview Section
-st.header("👀 ดูข้อมูลตาราง (Data Preview)")
-prev_cat = st.radio("เลือกหมวด", options=["master", "transaction"], horizontal=True, key="preview_cat")
-prev_options = tables.get(prev_cat, [])
-tbl_preview = st.selectbox("เลือกตาราง", options=prev_options, index=0 if prev_options else None)
-
-if tbl_preview and ok_old and ok_new:
-    with open_conn(conn_str_old) as conn_old, open_conn(conn_str_new) as conn_new:
-        cols_old = [c for c, _ in q_columns(conn_old, tbl_preview)]
-        cols_new = [c for c, _ in q_columns(conn_new, tbl_preview)]
-        common_cols = [c for c in cols_old if c in cols_new] or (cols_old or cols_new)
-
-        st.subheader(f"ตาราง: `{tbl_preview}`")
-        with st.expander("🧩 ตั้งค่าการดึงข้อมูล", expanded=True):
-            c_l, c_r = st.columns([2, 1])
-            with c_l:
-                picked_cols = st.multiselect(
-                    "เลือกคอลัมน์ (เว้นว่าง = คอลัมน์ร่วมทั้งหมด)",
-                    options=common_cols,
-                    default=common_cols[:min(10, len(common_cols))]
-                )
-                where_clause = st.text_input("WHERE (ไม่ต้องพิมพ์คำว่า WHERE)", placeholder="เช่น Code='TH' AND IsActive=1")
-                order_by = st.text_input("ORDER BY", placeholder="เช่น Code, Name")
-            with c_r:
-                top_n = st.number_input("TOP (จำนวนแถว)", min_value=1, max_value=100000, value=200, step=50)
-                st.caption("แนะนำ 50–1000 เพื่อแสดงผลเร็ว")
-
-            run_preview = st.button("📄 แสดงข้อมูล (OLD/NEW)")
-
-        if run_preview:
-            col_old, col_new = st.columns(2)
-            use_cols = picked_cols or common_cols
-
-            with col_old:
-                st.write("**OLD**")
-                try:
-                    df_old = fetch_table_sample(conn_old, tbl_preview, use_cols, where_clause, order_by, top_n)
-                    st.dataframe(df_old, use_container_width=True)
-                    st.download_button(
-                        "⬇️ ดาวน์โหลด CSV (OLD)",
-                        data=df_old.to_csv(index=False).encode("utf-8-sig"),
-                        file_name=f"{tbl_preview}_OLD.csv",
-                        mime="text/csv"
-                    )
-                except Exception as e:
-                    st.error(f"ดึงข้อมูล OLD ไม่สำเร็จ: {e}")
-
-            with col_new:
-                st.write("**NEW**")
-                try:
-                    df_new = fetch_table_sample(conn_new, tbl_preview, use_cols, where_clause, order_by, top_n)
-                    st.dataframe(df_new, use_container_width=True)
-                    st.download_button(
-                        "⬇️ ดาวน์โหลด CSV (NEW)",
-                        data=df_new.to_csv(index=False).encode("utf-8-sig"),
-                        file_name=f"{tbl_preview}_NEW.csv",
-                        mime="text/csv"
-                    )
-                except Exception as e:
-                    st.error(f"ดึงข้อมูล NEW ไม่สำเร็จ: {e}")
-
-        with st.expander("🧪 ตัวช่วยเทียบอย่างไว (diff จาก sample ที่ดึงมา)"):
-            st.caption("ใช้การตั้งค่าด้านบน (คอลัมน์/WHERE/ORDER/TOP) เพื่อดึง sample และหาแถวที่ต่างกัน")
-            if st.button("🔍 หาแถวที่ไม่ตรงกัน (from sample)"):
-                try:
-                    use_cols = picked_cols or common_cols
-                    df_old = fetch_table_sample(conn_old, tbl_preview, use_cols, where_clause, order_by, top_n)
-                    df_new = fetch_table_sample(conn_new, tbl_preview, use_cols, where_clause, order_by, top_n)
-
-                    cols_use = [c for c in use_cols if c in df_old.columns and c in df_new.columns]
-                    if not cols_use:
-                        st.warning("ไม่มีคอลัมน์ร่วมสำหรับเทียบ")
-                    else:
-                        set_old = {tuple(str(x) for x in row) for row in df_old[cols_use].itertuples(index=False, name=None)}
-                        set_new = {tuple(str(x) for x in row) for row in df_new[cols_use].itertuples(index=False, name=None)}
-                        only_old = set_old - set_new
-                        only_new = set_new - set_old
-
-                        def tuples_to_df(tset):
-                            return pd.DataFrame([dict(zip(cols_use, t)) for t in list(tset)])
-
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.write("🔻 อยู่ใน OLD แต่ไม่อยู่ใน NEW (จาก sample)")
-                            df1 = tuples_to_df(only_old)
-                            st.dataframe(df1, use_container_width=True)
-                            if not df1.empty:
-                                st.download_button(
-                                    "⬇️ CSV (Only in OLD - sample)",
-                                    data=df1.to_csv(index=False).encode("utf-8-sig"),
-                                    file_name=f"{tbl_preview}_only_in_OLD_sample.csv",
-                                    mime="text/csv"
-                                )
-                        with c2:
-                            st.write("🔺 อยู่ใน NEW แต่ไม่อยู่ใน OLD (จาก sample)")
-                            df2 = tuples_to_df(only_new)
-                            st.dataframe(df2, use_container_width=True)
-                            if not df2.empty:
-                                st.download_button(
-                                    "⬇️ CSV (Only in NEW - sample)",
-                                    data=df2.to_csv(index=False).encode("utf-8-sig"),
-                                    file_name=f"{tbl_preview}_only_in_NEW_sample.csv",
-                                    mime="text/csv"
-                                )
-                except Exception as e:
-                    st.error(f"เปรียบเทียบไม่สำเร็จ: {e}")
-else:
-    if not ok_old or not ok_new:
-        st.info("ยังเชื่อมต่อฐานข้อมูลไม่ได้ กรุณาตั้งค่าจากปุ่ม ‘ตั้งค่าเชื่อมต่อฐานข้อมูล’ ด้านบนก่อน")
-
-# ================================
-# Notes
-# ================================
-st.caption(
-    "หมายเหตุ: โค้ดนี้ใช้ WITH (NOLOCK) เพื่ออ่านเร็วและลดการล็อก เหมาะกับการตรวจสอบ/อ่านอย่างเดียว "
-    "หากต้องการความถูกต้องระดับธุรกรรม 100% ให้พิจารณาเอา NOLOCK ออกตามเหมาะสม."
-)
+# ถ้าอยากให้ทำเป็นหน้าต่าง **แยกหน้า (multi-page)** สำหรับตั้งค่า หรืออยากเพิ่มฟีเจอร์ **ทดสอบสิทธิ์/ROLE/DBCOLLATION** บอกได้เลย เดี๋ยวผมจัดให้ครับ 👍
