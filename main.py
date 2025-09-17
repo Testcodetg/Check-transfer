@@ -430,7 +430,7 @@ if st.button("เริ่มเปรียบเทียบ", disabled=not (o
                     f"- Checksum: OLD = **{res['checksum_old']}**, NEW = **{res['checksum_new']}**"
                 )
                 if res["messages"]:
-                    with st.expander("รายละเอียด / คำเตือน", expanded=False, key=f"warn_{tname}"):
+                    with st.expander("รายละเอียด / คำเตือน", expanded=False):
                         for m in res["messages"]:
                             st.write(f"- {m}")
 
@@ -460,7 +460,7 @@ if st.button("เริ่มเปรียบเทียบ", disabled=not (o
                             st.caption("— ไม่มีตัวอย่าง —")
 
                 # ===== ตัวอย่างข้อมูลแบบเคียงข้าง (OLD / NEW) =====
-                with st.expander("👀 ตัวอย่างข้อมูล (OLD / NEW)", expanded=False, key=f"sample_{tname}"):
+                with st.expander("👀 ตัวอย่างข้อมูล (OLD / NEW)", expanded=False):
                     top_sample = st.number_input(
                         f"จำนวนแถวตัวอย่างสำหรับ {tname}",
                         min_value=1, max_value=10000, value=50, step=50,

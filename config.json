@@ -1,9 +1,9 @@
 {
   "old_db": {
-    "server": "203.151.190.164,8088",
-    "database": "FACTINDB",
+    "server": "20240329-3408",
+    "database": "HROpenspaceDB_Olic",
     "uid": "sa",
-    "pwd": "Tigersoft1998"
+    "pwd": "tiger"
   },
   "new_db": {
     "server": "20240329-3408",
@@ -12,6 +12,6 @@
     "pwd": "tiger"
   },
   "driver": "ODBC Driver 18 for SQL Server",
-  "encrypt": true,
-  "trust_server_cert": true
+  "encrypt": false,
+  "trust_server_cert": false
 }
