@@ -88,6 +88,9 @@ def build_conn_str(cfg: dict, which: str) -> str:
         )
     else:
         # pymssql ไม่ใช้ driver string, ไม่รองรับ encrypt/trust
+        # ถ้า server เป็น instance name (เช่น HOST\SQLEXPRESS) ให้แจ้งเตือน
+        if "\\" in server:
+            st.warning("pymssql ไม่รองรับ instance name (\\) กรุณาใช้ IP หรือ host,port เช่น 10.0.0.5,1433")
         return (server, uid, pwd, database)
 
 def open_conn(conn_str):
@@ -95,7 +98,16 @@ def open_conn(conn_str):
         return pyodbc.connect(conn_str, timeout=10)
     else:
         server, user, pwd, db = conn_str
-        return pymssql.connect(server=server, user=user, password=pwd, database=db, login_timeout=10)
+        # ถ้า server ไม่มี ,port และไม่ใช่ localhost ให้เตือน
+        if (server and "\\" in server):
+            raise ValueError("pymssql ไม่รองรับ instance name (\\) กรุณาใช้ IP หรือ host,port เช่น 10.0.0.5,1433")
+        if server and (server != "localhost") and ("," not in server):
+            st.info("แนะนำให้ระบุ port เช่น 10.0.0.5,1433 หรือ myserver,1433 สำหรับ pymssql")
+        try:
+            return pymssql.connect(server=server, user=user, password=pwd, database=db, login_timeout=10)
+        except Exception as e:
+            st.error(f"pymssql connect error: {e}\n\nหากใช้ instance name ให้เปลี่ยนเป็น host,port และตรวจสอบ firewall/network")
+            raise
 
 # ================================
 # DB Metadata / Quick Checks
