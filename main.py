@@ -44,6 +44,7 @@ def load_config() -> dict:
     default_cfg = {
         "old_db": {"server": "", "database": "", "uid": "", "pwd": ""},
         "new_db": {"server": "", "database": "", "uid": "", "pwd": ""},
+        # fallback: ใช้ driver 17 ถ้าไม่มีให้ใช้ 'SQL Server'
         "driver": "ODBC Driver 17 for SQL Server",
         "encrypt": True,
         "trust_server_cert": True,
@@ -62,6 +63,13 @@ def build_conn_str(cfg: dict, which: str) -> str:
     which: 'old_db' | 'new_db'
     """
     driver = cfg.get("driver") or "ODBC Driver 17 for SQL Server"
+    # fallback: ถ้า driver 17 ไม่เจอ ให้ใช้ 'SQL Server' (Linux/Cloud)
+    if driver not in ["ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server", "SQL Server"]:
+        driver = "ODBC Driver 17 for SQL Server"
+    import platform
+    if platform.system() == "Linux" and driver == "ODBC Driver 17 for SQL Server":
+        # Streamlit Cloud/Linux มักไม่มี driver 17 ให้ใช้ 'SQL Server'
+        driver = "SQL Server"
     encrypt = "yes" if cfg.get("encrypt", True) else "no"
     trust = "yes" if cfg.get("trust_server_cert", True) else "no"
 
