@@ -1,8 +1,6 @@
-# app.py
 import json
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
-import contextlib
 
 import pyodbc
 import pandas as pd
@@ -43,12 +41,10 @@ def save_json(path: Path, data: dict) -> bool:
 # Config / Tables
 # ================================
 def load_config() -> dict:
-    # TIP: ค่า default ยังตั้งเป็น ODBC 18 ไว้ก่อน
-    # ถ้าไม่มี ODBC บนเครื่อง แอปจะ fallback เป็น pymssql อัตโนมัติ
     default_cfg = {
         "old_db": {"server": "", "database": "", "uid": "", "pwd": ""},
         "new_db": {"server": "", "database": "", "uid": "", "pwd": ""},
-        "driver": "pymssql",  # เลือกได้: "ODBC Driver 18 for SQL Server" | "ODBC Driver 17 for SQL Server" | "FreeTDS" | "pymssql"
+        "driver": "ODBC Driver 17 for SQL Server",
         "encrypt": True,
         "trust_server_cert": True,
     }
@@ -61,49 +57,13 @@ def load_tables() -> dict:
     }
     return load_json(TABLES_PATH, default_tables)
 
-# ================================
-# Driver picking / Connection helpers
-# ================================
-def list_odbc_drivers() -> List[str]:
-    with contextlib.suppress(Exception):
-        return [d.strip() for d in pyodbc.drivers()]
-    return []
-
-def pick_sqlserver_driver(preferred: Optional[str] = None) -> str:
-    """
-    เลือก driver ที่ใช้ได้:
-      - ถ้า preferred = "pymssql" -> ใช้ pymssql (ไม่พึ่ง ODBC)
-      - มิฉะนั้นลำดับ: preferred → ODBC 18 → ODBC 17 → ODBC 13 → FreeTDS
-      - ถ้าไม่พบ ODBC ใด ๆ เลย → fallback เป็น "pymssql"
-    """
-    if preferred and preferred.lower().strip() == "pymssql":
-        return "pymssql"
-
-    available = list_odbc_drivers()
-    if preferred and preferred in available:
-        return preferred
-
-    for d in [
-        "ODBC Driver 18 for SQL Server",
-        "ODBC Driver 17 for SQL Server",
-        "ODBC Driver 13 for SQL Server",
-        "FreeTDS",
-    ]:
-        if d in available:
-            return d
-
-    # สุดท้าย: Streamlit Cloud มักไม่มี ODBC → ใช้ pymssql
-    return "pymssql"
-
-def build_conn_info(cfg: dict, which: str) -> Tuple[str, str]:
+def build_conn_str(cfg: dict, which: str) -> str:
     """
     which: 'old_db' | 'new_db'
-    คืน (driver_name, payload)
-      - ถ้า driver = ODBC/FreeTDS → payload = ODBC connection string
-      - ถ้า driver = pymssql     → payload = JSON params {"server","database","uid","pwd"}
     """
-    preferred = (cfg.get("driver") or "").strip()
-    driver = pick_sqlserver_driver(preferred)
+    driver = cfg.get("driver") or "ODBC Driver 17 for SQL Server"
+    encrypt = "yes" if cfg.get("encrypt", True) else "no"
+    trust = "yes" if cfg.get("trust_server_cert", True) else "no"
 
     part = cfg.get(which, {})
     server = part.get("server", "")
@@ -111,60 +71,13 @@ def build_conn_info(cfg: dict, which: str) -> Tuple[str, str]:
     uid = part.get("uid", "")
     pwd = part.get("pwd", "")
 
-    encrypt = "yes" if cfg.get("encrypt", True) else "no"
-    trust = "yes" if cfg.get("trust_server_cert", True) else "no"
+    return (
+        f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
+        f"UID={uid};PWD={pwd};Encrypt={encrypt};TrustServerCertificate={trust}"
+    )
 
-    if driver == "pymssql":
-        # ใช้ payload เป็น JSON ให้ open_conn อ่านต่อ
-        return "pymssql", json.dumps({"server": server, "database": database, "uid": uid, "pwd": pwd})
-
-    if driver.startswith("ODBC Driver"):
-        conn_str = (
-            f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
-            f"UID={uid};PWD={pwd};Encrypt={encrypt};TrustServerCertificate={trust}"
-        )
-        return driver, conn_str
-
-    if driver == "FreeTDS":
-        # ต้องมี PORT + TDS_Version (ทั่วไป 1433 / 7.4)
-        conn_str = (
-            f"DRIVER={{FreeTDS}};SERVER={server};PORT=1433;DATABASE={database};"
-            f"UID={uid};PWD={pwd};TDS_Version=7.4"
-        )
-        return driver, conn_str
-
-    # กรณีไม่คาดคิด
-    return "", ""
-
-def open_conn(conn_info: Tuple[str, str]):
-    """
-    รับ (driver_name, payload)
-      - ถ้า driver = pymssql → เชื่อมต่อด้วย pymssql
-      - อื่น ๆ → ใช้ pyodbc.connect(payload)
-    """
-    driver, payload = conn_info
-    if driver == "pymssql":
-        try:
-            import pymssql  # ติดตั้งใน requirements.txt: pymssql==2.3.0
-        except Exception as e:
-            raise RuntimeError("ต้องติดตั้ง pymssql ใน requirements.txt (เช่น pymssql==2.3.0)") from e
-
-        params = json.loads(payload or "{}")
-        # NOTE: ถ้า server เป็นรูป hostname\instance อาจต้องใช้พอร์ตแทนในบางโฮสต์
-        return pymssql.connect(
-            server=params.get("server", ""),
-            user=params.get("uid", ""),
-            password=params.get("pwd", ""),
-            database=params.get("database", ""),
-            login_timeout=10, timeout=10, charset="utf8"
-        )
-
-    if not driver:
-        raise RuntimeError(
-            "ไม่พบ ODBC driver และไม่ได้เลือก pymssql\n"
-            "วิธีแก้: ติดตั้ง msodbcsql18/msodbcsql17 หรือเลือก 'pymssql' ในหน้า ตั้งค่าเชื่อมต่อ"
-        )
-    return pyodbc.connect(payload, timeout=10)
+def open_conn(conn_str: str):
+    return pyodbc.connect(conn_str, timeout=10)
 
 # ================================
 # DB Metadata / Quick Checks
@@ -182,9 +95,7 @@ def q_columns(conn, table_name: str) -> List[Tuple[str, int]]:
     """
     with conn.cursor() as cur:
         cur.execute(sql, (table_name,))
-        rows = cur.fetchall()
-        # บางไดรเวอร์ส่งกลับเป็น tuple / บางทีเป็น Row → เข้าถึงด้วย index จะปลอดภัย
-        return [(row[0], int(row[1])) for row in rows]
+        return [(r[0], int(r[1])) for r in cur.fetchall()]
 
 def q_rowcount(conn, table_name: str) -> int:
     sql = f"SELECT COUNT_BIG(1) FROM {quote_ident(table_name)} WITH (NOLOCK)"
@@ -264,7 +175,7 @@ def compare_table(conn_old, conn_new, table_name: str) -> dict:
         res["messages"].append(f"เกิดข้อผิดพลาด: {e}")
         return res
 
-def sample_row_diffs(conn_old, conn_new, table: str, limit: int = 100):
+def sample_row_diffs(conn_old, conn_new, table: str, limit: int = 100) -> Tuple[List[Dict], List[Dict], List[str]]:
     """
     ดึง sample สองชุดจาก OLD/NEW และหาค่าที่ต่างกันเชิงค่า (เฉพาะคอลัมน์ร่วม)
     """
@@ -306,6 +217,7 @@ def fetch_table_sample(conn, table: str,
     order_sql = f" ORDER BY {order_by} " if order_by and order_by.strip() else ""
 
     sql = f"SELECT TOP ({top}) {col_sql} FROM {quote_ident(table)} WITH (NOLOCK){where_sql}{order_sql}"
+
     with conn.cursor() as cur:
         cur.execute(sql)
         rows = cur.fetchall()
@@ -330,26 +242,15 @@ def render_config_form(cfg: dict) -> dict:
         cfg_editor[db_key] = {"server": server, "database": database, "uid": uid, "pwd": pwd}
 
     st.subheader("🧩 ตัวเลือกเพิ่มเติม")
-    driver = st.text_input(
-        "ODBC Driver / pymssql",
-        value=cfg.get("driver", "pymssql"),
-        key="cfg_driver_txt",
-        help="ระบุชื่อไดรเวอร์ที่ต้องการ เช่น 'ODBC Driver 18 for SQL Server', 'ODBC Driver 17 for SQL Server', 'FreeTDS', หรือ 'pymssql'"
-    )
+    driver = st.text_input("ODBC Driver", value=cfg.get("driver", "ODBC Driver 17 for SQL Server"), key="cfg_driver_txt")
     encrypt = st.checkbox("Encrypt", value=cfg.get("encrypt", True), key="cfg_encrypt_chk")
     trust = st.checkbox("Trust Server Certificate", value=cfg.get("trust_server_cert", True), key="cfg_trust_chk")
-
-    # แสดง ODBC drivers ที่เครื่องมี (ช่วยตัดสินใจ)
-    odbc_list = list_odbc_drivers()
-    if odbc_list:
-        st.caption("ODBC drivers ที่ระบบมี: " + ", ".join(odbc_list))
-    else:
-        st.caption("ไม่พบ ODBC drivers ในระบบ — แนะนำใช้ 'pymssql' บน Streamlit Cloud")
 
     cfg_new = {**cfg, **cfg_editor, "driver": driver, "encrypt": encrypt, "trust_server_cert": trust}
     return cfg_new
 
 def config_editor_ui(cfg: dict):
+    # ปุ่มเปิดตั้งค่า
     colA, colB = st.columns([1, 3])
     with colA:
         if "show_config" not in st.session_state:
@@ -368,14 +269,14 @@ def config_editor_ui(cfg: dict):
             with col1:
                 if st.button("🔌 ทดสอบเชื่อมต่อ OLD", key="btn_test_old_modal"):
                     try:
-                        with open_conn(build_conn_info(cfg_new, "old_db")):
+                        with open_conn(build_conn_str(cfg_new, "old_db")):
                             st.success("OLD: เชื่อมต่อได้")
                     except Exception as e:
                         st.error(f"OLD: เชื่อมต่อไม่ได้ - {e}")
             with col2:
                 if st.button("🔌 ทดสอบเชื่อมต่อ NEW", key="btn_test_new_modal"):
                     try:
-                        with open_conn(build_conn_info(cfg_new, "new_db")):
+                        with open_conn(build_conn_str(cfg_new, "new_db")):
                             st.success("NEW: เชื่อมต่อได้")
                     except Exception as e:
                         st.error(f"NEW: เชื่อมต่อไม่ได้ - {e}")
@@ -388,7 +289,7 @@ def config_editor_ui(cfg: dict):
                     if save_json(CONFIG_PATH, cfg_new):
                         st.success("บันทึก config.json สำเร็จ")
                         st.session_state["show_config"] = False
-                        st.experimental_rerun()
+                        st.rerun()
             with colC:
                 if st.button("❌ ยกเลิก", key="btn_cancel_cfg_modal"):
                     st.session_state["show_config"] = False
@@ -400,14 +301,14 @@ def config_editor_ui(cfg: dict):
             with c1:
                 if st.button("🔌 ทดสอบ OLD", key="btn_test_old_exp"):
                     try:
-                        with open_conn(build_conn_info(cfg_new, "old_db")):
+                        with open_conn(build_conn_str(cfg_new, "old_db")):
                             st.success("OLD: เชื่อมต่อได้")
                     except Exception as e:
                         st.error(f"OLD: เชื่อมต่อไม่ได้ - {e}")
             with c2:
                 if st.button("🔌 ทดสอบ NEW", key="btn_test_new_exp"):
                     try:
-                        with open_conn(build_conn_info(cfg_new, "new_db")):
+                        with open_conn(build_conn_str(cfg_new, "new_db")):
                             st.success("NEW: เชื่อมต่อได้")
                     except Exception as e:
                         st.error(f"NEW: เชื่อมต่อไม่ได้ - {e}")
@@ -417,7 +318,7 @@ def config_editor_ui(cfg: dict):
             if st.button("💾 บันทึกการตั้งค่า", type="primary", key="btn_save_cfg_exp"):
                 if save_json(CONFIG_PATH, cfg_new):
                     st.success("บันทึก config.json สำเร็จ")
-                    st.experimental_rerun()
+                    st.rerun()
 
 # ================================
 # Streamlit UI
@@ -435,21 +336,21 @@ st.divider()
 
 # ---- Connection Status
 st.subheader("สถานะการเชื่อมต่อ")
-conn_old_info = build_conn_info(cfg, "old_db")  # (driver, payload)
-conn_new_info = build_conn_info(cfg, "new_db")
+conn_str_old = build_conn_str(cfg, "old_db")
+conn_str_new = build_conn_str(cfg, "new_db")
 
 col_status, col_edit_tables = st.columns([1, 1])
 with col_status:
     ok_old = ok_new = False
     try:
-        with open_conn(conn_old_info):
+        with open_conn(conn_str_old):
             st.success("OLD: เชื่อมต่อได้")
             ok_old = True
     except Exception as e:
         st.error(f"OLD: เชื่อมต่อไม่ได้ - {e}")
 
     try:
-        with open_conn(conn_new_info):
+        with open_conn(conn_str_new):
             st.success("NEW: เชื่อมต่อได้")
             ok_new = True
     except Exception as e:
@@ -480,7 +381,7 @@ if st.button("เริ่มเปรียบเทียบ", disabled=not (o
     if not selected:
         st.info("กรุณาเลือกอย่างน้อย 1 ตาราง")
     else:
-        with open_conn(conn_old_info) as conn_old, open_conn(conn_new_info) as conn_new:
+        with open_conn(conn_str_old) as conn_old, open_conn(conn_str_new) as conn_new:
             for tname in selected:
                 st.markdown(f"### 📄 ตาราง: `{tname}`")
                 res = compare_table(conn_old, conn_new, tname)
@@ -609,13 +510,13 @@ prev_options = tables.get(prev_cat, [])
 tbl_preview = st.selectbox("เลือกตาราง", options=prev_options, index=0 if prev_options else None, key="preview_tbl")
 
 if tbl_preview and ok_old and ok_new:
-    with open_conn(conn_old_info) as conn_old, open_conn(conn_new_info) as conn_new:
+    with open_conn(conn_str_old) as conn_old, open_conn(conn_str_new) as conn_new:
         cols_old = [c for c, _ in q_columns(conn_old, tbl_preview)]
         cols_new = [c for c, _ in q_columns(conn_new, tbl_preview)]
         common_cols = [c for c in cols_old if c in cols_new] or (cols_old or cols_new)
 
         st.subheader(f"ตาราง: `{tbl_preview}`")
-        with st.expander("🧩 ตั้งค่าการดึงข้อมูล", expanded=True, key="preview_settings"):
+        with st.expander("🧩 ตั้งค่าการดึงข้อมูล", expanded=True):
             c_l, c_r = st.columns([2, 1])
             with c_l:
                 picked_cols = st.multiselect(
@@ -665,6 +566,54 @@ if tbl_preview and ok_old and ok_new:
                     )
                 except Exception as e:
                     st.error(f"ดึงข้อมูล NEW ไม่สำเร็จ: {e}")
+
+        with st.expander("🧪 ตัวช่วยเทียบอย่างไว (diff จาก sample ที่ดึงมา)", expanded=False):
+            st.caption("ใช้การตั้งค่าด้านบน (คอลัมน์/WHERE/ORDER/TOP) เพื่อดึง sample และหาแถวที่ต่างกัน")
+            if st.button("🔍 หาแถวที่ไม่ตรงกัน (from sample)", key="btn_quickdiff"):
+                try:
+                    use_cols = picked_cols or common_cols
+                    df_old = fetch_table_sample(conn_old, tbl_preview, use_cols, where_clause, order_by, top_n)
+                    df_new = fetch_table_sample(conn_new, tbl_preview, use_cols, where_clause, order_by, top_n)
+
+                    cols_use = [c for c in use_cols if c in df_old.columns and c in df_new.columns]
+                    if not cols_use:
+                        st.warning("ไม่มีคอลัมน์ร่วมสำหรับเทียบ")
+                    else:
+                        set_old = {tuple(str(x) for x in row) for row in df_old[cols_use].itertuples(index=False, name=None)}
+                        set_new = {tuple(str(x) for x in row) for row in df_new[cols_use].itertuples(index=False, name=None)}
+                        only_old = set_old - set_new
+                        only_new = set_new - set_old
+
+                        def tuples_to_df(tset):
+                            return pd.DataFrame([dict(zip(cols_use, t)) for t in list(tset)])
+
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.write("🔻 อยู่ใน OLD แต่ไม่อยู่ใน NEW (จาก sample)")
+                            df1 = tuples_to_df(only_old)
+                            st.dataframe(df1, use_container_width=True, key="df_prev_only_old")
+                            if not df1.empty:
+                                st.download_button(
+                                    "⬇️ CSV (Only in OLD - sample)",
+                                    data=df1.to_csv(index=False).encode("utf-8-sig"),
+                                    file_name=f"{tbl_preview}_only_in_OLD_sample.csv",
+                                    mime="text/csv",
+                                    key="dl_prev_only_old"
+                                )
+                        with c2:
+                            st.write("🔺 อยู่ใน NEW แต่ไม่อยู่ใน OLD (จาก sample)")
+                            df2 = tuples_to_df(only_new)
+                            st.dataframe(df2, use_container_width=True, key="df_prev_only_new")
+                            if not df2.empty:
+                                st.download_button(
+                                    "⬇️ CSV (Only in NEW - sample)",
+                                    data=df2.to_csv(index=False).encode("utf-8-sig"),
+                                    file_name=f"{tbl_preview}_only_in_NEW_sample.csv",
+                                    mime="text/csv",
+                                    key="dl_prev_only_new"
+                                )
+                except Exception as e:
+                    st.error(f"เปรียบเทียบไม่สำเร็จ: {e}")
 else:
     if not ok_old or not ok_new:
         st.info("ยังเชื่อมต่อฐานข้อมูลไม่ได้ กรุณาตั้งค่าจากปุ่ม ‘ตั้งค่าเชื่อมต่อฐานข้อมูล’ ด้านบนก่อน")
@@ -673,6 +622,6 @@ else:
 # Notes
 # ================================
 st.caption(
-    "หมายเหตุ: โค้ดนี้รองรับ ODBC (18/17/13), FreeTDS และ pymssql โดยจะเลือกอัตโนมัติหากไม่พบ ODBC. "
-    "WITH (NOLOCK) ใช้อ่านเร็ว เหมาะกับงานตรวจสอบ/อ่านเท่านั้น หากต้องการความถูกต้องระดับธุรกรรม ให้พิจารณาเอา NOLOCK ออก."
+    "หมายเหตุ: โค้ดนี้ใช้ WITH (NOLOCK) เพื่ออ่านเร็วและลดการล็อก เหมาะกับการตรวจสอบ/อ่านอย่างเดียว "
+    "หากต้องการความถูกต้องระดับธุรกรรม 100% ให้พิจารณาเอา NOLOCK ออกตามเหมาะสม."
 )
