@@ -1,31 +1,18 @@
-
 {
   "old_db": {
-    "server": "10.1.2.3",       
-    "port": 1433,               
-    "database": "Cyberhm",
+    "server": "20240329-3408",
+    "database": "HROpenspaceDB_Olic",
     "uid": "sa",
-    "pwd": "******"
+    "pwd": "tiger"
   },
   "new_db": {
-    "server": "10.1.2.4",
-    "port": 1433,
-    "database": "CyberhmNew",
+    "server": "20240329-3408",
+    "database": "TigerOpenspace",
     "uid": "sa",
-    "pwd": "******"
+    "pwd": "tiger"
   },
-
-  "driver": "ODBC Driver 17 for SQL Server",   
-  "encrypt": true,                            
-  "trust_server_cert": true,                  
-  "login_timeout": 10,                         
-  "conn_timeout": 15,                          
-  "mars": false,                               
-  "application_intent": "ReadOnly",          
-  "ansi_warnings": false,              
-
-  "pymssql": {
-    "tds_version": "7.4"                 
-  }
+  "driver": "ODBC Driver 18 for SQL Server",
+  "encrypt": false,
+  "trust_server_cert": false
 }
-
+ 
