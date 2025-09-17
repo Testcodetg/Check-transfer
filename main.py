@@ -67,41 +67,28 @@ def build_conn_str(cfg: dict, which: str) -> str:
     """
     which: 'old_db' | 'new_db'
     """
-        part = cfg.get(which, {})
-        server = part.get("server", "")
-        database = part.get("database", "")
-        uid = part.get("uid", "")
-        pwd = part.get("pwd", "")
-        driver = cfg.get("driver") or "ODBC Driver 17 for SQL Server"
-        encrypt = "yes" if cfg.get("encrypt", True) else "no"
-        trust = "yes" if cfg.get("trust_server_cert", True) else "no"
-
-        if USE_PYODBC:
-            import platform
-            if driver not in ["ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server", "SQL Server"]:
-                driver = "ODBC Driver 17 for SQL Server"
-            if platform.system() == "Linux" and driver == "ODBC Driver 17 for SQL Server":
-                driver = "SQL Server"
-            return (
-                f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
-                f"UID={uid};PWD={pwd};Encrypt={encrypt};TrustServerCertificate={trust}"
-            )
-        else:
-            # pymssql ไม่ใช้ driver string, ไม่รองรับ encrypt/trust
-            return (server, uid, pwd, database)
-    encrypt = "yes" if cfg.get("encrypt", True) else "no"
-    trust = "yes" if cfg.get("trust_server_cert", True) else "no"
-
     part = cfg.get(which, {})
     server = part.get("server", "")
     database = part.get("database", "")
     uid = part.get("uid", "")
     pwd = part.get("pwd", "")
+    driver = cfg.get("driver") or "ODBC Driver 17 for SQL Server"
+    encrypt = "yes" if cfg.get("encrypt", True) else "no"
+    trust = "yes" if cfg.get("trust_server_cert", True) else "no"
 
-    return (
-        f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
-        f"UID={uid};PWD={pwd};Encrypt={encrypt};TrustServerCertificate={trust}"
-    )
+    if USE_PYODBC:
+        import platform
+        if driver not in ["ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server", "SQL Server"]:
+            driver = "ODBC Driver 17 for SQL Server"
+        if platform.system() == "Linux" and driver == "ODBC Driver 17 for SQL Server":
+            driver = "SQL Server"
+        return (
+            f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
+            f"UID={uid};PWD={pwd};Encrypt={encrypt};TrustServerCertificate={trust}"
+        )
+    else:
+        # pymssql ไม่ใช้ driver string, ไม่รองรับ encrypt/trust
+        return (server, uid, pwd, database)
 
 def open_conn(conn_str):
     if USE_PYODBC:
