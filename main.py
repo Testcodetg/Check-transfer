@@ -2,7 +2,12 @@ import json
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
-import pyodbc
+try:
+    import pyodbc
+    USE_PYODBC = True
+except ImportError:
+    import pymssql
+    USE_PYODBC = False
 import pandas as pd
 import streamlit as st
 
@@ -62,14 +67,28 @@ def build_conn_str(cfg: dict, which: str) -> str:
     """
     which: 'old_db' | 'new_db'
     """
-    driver = cfg.get("driver") or "ODBC Driver 17 for SQL Server"
-    # fallback: ถ้า driver 17 ไม่เจอ ให้ใช้ 'SQL Server' (Linux/Cloud)
-    if driver not in ["ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server", "SQL Server"]:
-        driver = "ODBC Driver 17 for SQL Server"
-    import platform
-    if platform.system() == "Linux" and driver == "ODBC Driver 17 for SQL Server":
-        # Streamlit Cloud/Linux มักไม่มี driver 17 ให้ใช้ 'SQL Server'
-        driver = "SQL Server"
+        part = cfg.get(which, {})
+        server = part.get("server", "")
+        database = part.get("database", "")
+        uid = part.get("uid", "")
+        pwd = part.get("pwd", "")
+        driver = cfg.get("driver") or "ODBC Driver 17 for SQL Server"
+        encrypt = "yes" if cfg.get("encrypt", True) else "no"
+        trust = "yes" if cfg.get("trust_server_cert", True) else "no"
+
+        if USE_PYODBC:
+            import platform
+            if driver not in ["ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server", "SQL Server"]:
+                driver = "ODBC Driver 17 for SQL Server"
+            if platform.system() == "Linux" and driver == "ODBC Driver 17 for SQL Server":
+                driver = "SQL Server"
+            return (
+                f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
+                f"UID={uid};PWD={pwd};Encrypt={encrypt};TrustServerCertificate={trust}"
+            )
+        else:
+            # pymssql ไม่ใช้ driver string, ไม่รองรับ encrypt/trust
+            return (server, uid, pwd, database)
     encrypt = "yes" if cfg.get("encrypt", True) else "no"
     trust = "yes" if cfg.get("trust_server_cert", True) else "no"
 
@@ -84,8 +103,12 @@ def build_conn_str(cfg: dict, which: str) -> str:
         f"UID={uid};PWD={pwd};Encrypt={encrypt};TrustServerCertificate={trust}"
     )
 
-def open_conn(conn_str: str):
-    return pyodbc.connect(conn_str, timeout=10)
+def open_conn(conn_str):
+    if USE_PYODBC:
+        return pyodbc.connect(conn_str, timeout=10)
+    else:
+        server, user, pwd, db = conn_str
+        return pymssql.connect(server=server, user=user, password=pwd, database=db, login_timeout=10)
 
 # ================================
 # DB Metadata / Quick Checks
