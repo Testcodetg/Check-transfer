@@ -1,4 +1,4 @@
 streamlit
 pandas
 sqlalchemy
-pymssql==2.3.0
+pymssql
