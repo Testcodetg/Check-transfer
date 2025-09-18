@@ -1,24 +1,22 @@
-# ใช้ Python base image
-FROM python:3.12
+# ใช้ Python base image โดยบังคับ Platform เป็น amd64 และระบุ OS เป็น bookworm
+FROM --platform=linux/amd64 python:3.12-bookworm
 
-# ติดตั้ง system dependencies สำหรับ ODBC Driver 17 และ pymssql/pyodbc
+# ติดตั้ง system dependencies ที่จำเป็น
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
         curl \
-        gnupg2 \
-        apt-transport-https \
-        software-properties-common \
+        gnupg \
         unixodbc \
         unixodbc-dev \
         gcc \
         g++ \
         make \
-        python3-dev \
-        && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
-# ติดตั้ง Microsoft ODBC Driver 17
-RUN curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - && \
-    curl https://packages.microsoft.com/config/debian/12/prod.list > /etc/apt/sources.list.d/mssql-release.list && \
+# ติดตั้ง Microsoft ODBC Driver 17 
+# (Repository key และ list ถูกต้องสำหรับ bookworm อยู่แล้ว)
+RUN curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /etc/apt/trusted.gpg.d/microsoft.gpg && \
+    echo "deb [arch=amd64] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list && \
     apt-get update && \
     ACCEPT_EULA=Y apt-get install -y msodbcsql17 && \
     rm -rf /var/lib/apt/lists/*
@@ -37,4 +35,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 EXPOSE 8501
 
 # คำสั่งรันแอป
-CMD ["streamlit", "run", "main3.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "main.py", "--server.port=8501", "--server.address=0.0.0.0"]

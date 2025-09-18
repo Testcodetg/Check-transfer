@@ -62,14 +62,14 @@ def build_conn_str(cfg: dict, which: str) -> str:
     """
     which: 'old_db' | 'new_db'
     """
+    # ใช้ 'ODBC Driver 17 for SQL Server' เป็นค่าเริ่มต้นที่ถูกต้องสำหรับ Docker image ของเรา
     driver = cfg.get("driver") or "ODBC Driver 17 for SQL Server"
-    # fallback: ถ้า driver 17 ไม่เจอ ให้ใช้ 'SQL Server' (Linux/Cloud)
-    if driver not in ["ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server", "SQL Server"]:
-        driver = "ODBC Driver 17 for SQL Server"
-    import platform
-    if platform.system() == "Linux" and driver == "ODBC Driver 17 for SQL Server":
-        # Streamlit Cloud/Linux มักไม่มี driver 17 ให้ใช้ 'SQL Server'
-        driver = "SQL Server"
+    
+    # [REMOVED] ลบส่วนนี้ออก เพราะเป็นต้นเหตุของปัญหาใน Docker
+    # import platform
+    # if platform.system() == "Linux" and driver == "ODBC Driver 17 for SQL Server":
+    #     driver = "SQL Server"
+    
     encrypt = "yes" if cfg.get("encrypt", True) else "no"
     trust = "yes" if cfg.get("trust_server_cert", True) else "no"
 
