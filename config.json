@@ -6,12 +6,12 @@
     "pwd": "Tigersoft1998"
   },
   "new_db": {
-    "server": "20240329-3408",
+    "server": "203.151.190.164,8088",
     "database": "TigerOpenspace",
     "uid": "sa",
-    "pwd": "tiger"
+    "pwd": "Tigersoft1998"
   },
-  "driver": "ODBC Driver 18 for SQL Server",
+  "driver": "ODBC Driver 17 for SQL Server",
   "encrypt": true,
   "trust_server_cert": true
 }
