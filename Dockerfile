@@ -1,9 +1,26 @@
 # ใช้ Python base image
 FROM python:3.12
 
-# ติดตั้ง system dependencies ที่จำเป็นสำหรับ pymssql
+# ติดตั้ง system dependencies สำหรับ ODBC Driver 17 และ pymssql/pyodbc
 RUN apt-get update && \
-    apt-get install -y gcc freetds-dev && \
+    apt-get install -y \
+        curl \
+        gnupg2 \
+        apt-transport-https \
+        software-properties-common \
+        unixodbc \
+        unixodbc-dev \
+        gcc \
+        g++ \
+        make \
+        python3-dev \
+        && rm -rf /var/lib/apt/lists/*
+
+# ติดตั้ง Microsoft ODBC Driver 17
+RUN curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - && \
+    curl https://packages.microsoft.com/config/debian/12/prod.list > /etc/apt/sources.list.d/mssql-release.list && \
+    apt-get update && \
+    ACCEPT_EULA=Y apt-get install -y msodbcsql17 && \
     rm -rf /var/lib/apt/lists/*
 
 # ตั้ง working directory
